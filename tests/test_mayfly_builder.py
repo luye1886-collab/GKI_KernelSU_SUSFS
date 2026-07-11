@@ -634,7 +634,11 @@ class ManifestTests(unittest.TestCase):
         with tempfile.TemporaryDirectory(dir=REPO_ROOT) as temporary_dir:
             manifest = Path(temporary_dir) / "default.xml"
             manifest.write_text(f"<manifest>{projects}</manifest>", encoding="utf-8")
-            manifest_pins = builder.rewrite_manifest_with_superproject(manifest, pins)
+            manifest_pins = builder.rewrite_manifest_with_superproject(
+                manifest,
+                pins,
+                common_upstream=builder.SOURCE_SPECS["stock-5.10.226"].common_ref,
+            )
             root = ET.parse(manifest).getroot()
         self.assertEqual(manifest_pins, pins)
         self.assertEqual(
@@ -642,8 +646,34 @@ class ManifestTests(unittest.TestCase):
             pins,
         )
 
+    def test_manifest_rewrite_updates_only_common_upstream(self):
+        build_commit = "b" * 40
+        for source_name in ("stock-5.10.226", "security-5.10.236-r1"):
+            source = builder.SOURCE_SPECS[source_name]
+            content = (
+                '<manifest><project name="kernel/common" path="common" '
+                'revision="symbolic" upstream="removed-common-branch" />'
+                '<project name="kernel/build" path="build" '
+                'revision="symbolic" upstream="build-track" /></manifest>'
+            )
+            with self.subTest(source=source_name), tempfile.TemporaryDirectory(dir=REPO_ROOT) as temporary_dir:
+                manifest = Path(temporary_dir) / "default.xml"
+                manifest.write_text(content, encoding="utf-8")
+                builder.rewrite_manifest_with_superproject(
+                    manifest,
+                    {"common": source.common_commit, "build": build_commit},
+                    common_upstream=source.common_ref,
+                )
+                projects = {
+                    project.get("path"): project
+                    for project in ET.parse(manifest).getroot().iter("project")
+                }
+                self.assertEqual(projects["common"].get("upstream"), source.common_ref)
+                self.assertEqual(projects["build"].get("upstream"), "build-track")
+
     def test_manifest_rewrite_rejects_missing_mapping_duplicate_path_and_bad_sha(self):
-        common_commit = builder.SOURCE_SPECS["stock-5.10.226"].common_commit
+        source = builder.SOURCE_SPECS["stock-5.10.226"]
+        common_commit = source.common_commit
         pins = superproject_core_pins(common_commit)
         invalid_cases = (
             ('<manifest><project name="x" path="missing" /></manifest>', pins),
@@ -658,7 +688,32 @@ class ManifestTests(unittest.TestCase):
                 manifest = Path(temporary_dir) / "default.xml"
                 manifest.write_text(content, encoding="utf-8")
                 with self.assertRaises((ValueError, RuntimeError)):
-                    builder.rewrite_manifest_with_superproject(manifest, project_pins)
+                    builder.rewrite_manifest_with_superproject(
+                        manifest,
+                        project_pins,
+                        common_upstream=source.common_ref,
+                    )
+
+    def test_manifest_rewrite_rejects_unsafe_common_upstream(self):
+        source = builder.SOURCE_SPECS["stock-5.10.226"]
+        content = '<manifest><project name="kernel/common" path="common" /></manifest>'
+        invalid_refs = (
+            "android12-5.10-2024-11",
+            "deprecated/android12-5.10-main",
+            "deprecated/android12-5.10-2024-11;bad",
+        )
+        for common_upstream in invalid_refs:
+            with self.subTest(common_upstream=common_upstream), tempfile.TemporaryDirectory(
+                dir=REPO_ROOT
+            ) as temporary_dir:
+                manifest = Path(temporary_dir) / "default.xml"
+                manifest.write_text(content, encoding="utf-8")
+                with self.assertRaises(ValueError):
+                    builder.rewrite_manifest_with_superproject(
+                        manifest,
+                        {"common": source.common_commit},
+                        common_upstream=common_upstream,
+                    )
 
     def test_resolved_manifest_requires_all_lowercase_full_shas(self):
         sha_a = "a" * 40

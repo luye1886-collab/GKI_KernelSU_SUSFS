@@ -25,6 +25,7 @@ FULL_SHA_RE = re.compile(r"^[0-9a-f]{40}$")
 KCONFIG_SYMBOL_RE = re.compile(r"^CONFIG_[A-Z0-9_]+$")
 SAFE_REPO_URL_RE = re.compile(r"^[A-Za-z0-9._~:/-]+$")
 SAFE_RELATIVE_PATH_RE = re.compile(r"^[A-Za-z0-9._/-]+$")
+COMMON_UPSTREAM_RE = re.compile(r"^deprecated/android12-5\.10-[0-9]{4}-[0-9]{2}$")
 KSU_VERSION_NAME = "4.1.3"
 KSU_VERSION_CODE = 40796
 KPM_PATCH_PATH = "kpm/patch_linux"
@@ -508,8 +509,12 @@ def parse_superproject_ls_tree(
 def rewrite_manifest_with_superproject(
     manifest_path: Path,
     project_pins: Mapping[str, str],
+    *,
+    common_upstream: str,
 ) -> dict[str, str]:
     manifest_path = _require_regular_file(manifest_path, "manifest")
+    if not isinstance(common_upstream, str) or COMMON_UPSTREAM_RE.fullmatch(common_upstream) is None:
+        raise ValueError("common upstream must be a deprecated Android 12 5.10 monthly branch")
     if not isinstance(project_pins, Mapping) or not project_pins:
         raise ValueError("superproject pins 不能为空")
     validated_pins: dict[str, str] = {}
@@ -539,6 +544,8 @@ def rewrite_manifest_with_superproject(
         if revision is None:
             raise RuntimeError(f"manifest project 缺少 superproject 映射: {path}")
         project.set("revision", revision)
+        if path == "common":
+            project.set("upstream", common_upstream)
         manifest_pins[path] = revision
     tree.write(manifest_path, encoding="utf-8", xml_declaration=True)
     return manifest_pins
@@ -1583,7 +1590,11 @@ class MayflyBuilder:
             dependencies[self.source.manifest_dependency].get("path"),
         )
         manifest_path = source_root / ".repo" / "manifests" / Path(*manifest_path_value.split("/"))
-        self._manifest_pins = rewrite_manifest_with_superproject(manifest_path, project_pins)
+        self._manifest_pins = rewrite_manifest_with_superproject(
+            manifest_path,
+            project_pins,
+            common_upstream=self.source.common_ref,
+        )
         self.runner.run(
             repo_sync_command(repo_tool, jobs=self.jobs),
             cwd=source_root,
