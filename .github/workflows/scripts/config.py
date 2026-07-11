@@ -38,8 +38,16 @@ _REQUIRED_DEPENDENCY_METADATA = {
         "patch_path",
         "mayfly_compat_patch_path",
         "mayfly_compat_patch_sha256",
+        "mayfly_task_mmu_patch_path",
+        "mayfly_task_mmu_patch_sha256",
     ),
-    "sukisu_patch": ("kpm_patch_path",),
+    "sukisu_patch": (
+        "kpm_patch_path",
+        "hide_stuff_patch_path",
+        "hide_stuff_patch_sha256",
+        "mayfly_hide_stuff_patch_path",
+        "mayfly_hide_stuff_patch_sha256",
+    ),
     "baseband_guard": ("setup_path",),
     "git_repo": ("path", "version"),
     "android_manifest_2024_11": ("ref", "path"),
@@ -52,10 +60,25 @@ _REQUIRED_DEPENDENCY_METADATA = {
     "android_superproject_2025_05": ("ref", "common_commit"),
 }
 _SAFE_RELATIVE_PATH_FIELDS = frozenset(
-    {"path", "setup_path", "patch_path", "mayfly_compat_patch_path"}
+    {
+        "path",
+        "setup_path",
+        "patch_path",
+        "mayfly_compat_patch_path",
+        "mayfly_task_mmu_patch_path",
+        "hide_stuff_patch_path",
+        "mayfly_hide_stuff_patch_path",
+    }
 )
 _MAYFLY_COMPAT_PATCH_PATH = "patches/sukisu-v4.1.3-susfs-v2.2.0-compat.patch"
-_MAYFLY_COMPAT_PATCH_SHA256 = "8b0493e5485196ac808076906479feb9a6955c1d19abaeeb59509ba8105c09fe"
+_MAYFLY_COMPAT_PATCH_SHA256 = "32cd15ec68f7c6fb00857f01144da905b60d547ccb6141a92d35aa1261b6c994"
+_MAYFLY_TASK_MMU_PATCH_PATH = "patches/mayfly-android12-5.10-susfs-task-mmu.patch"
+_MAYFLY_TASK_MMU_PATCH_SHA256 = "c3e70b66d8b67aa29ab6935954deb7cf4402e44e231b73e7cee1a4dedc0326c1"
+_HIDE_STUFF_PATCH_PATH = "69_hide_stuff.patch"
+_HIDE_STUFF_PATCH_SHA256 = "59965d78e4ff2d7a427b8c2a0ddfedbb75693bda60934ec9bdc4d7627fb666a5"
+_HIDE_STUFF_PATCH_SIZE = 2601
+_MAYFLY_HIDE_STUFF_PATCH_PATH = "patches/mayfly-android12-5.10-69-hide-stuff.patch"
+_MAYFLY_HIDE_STUFF_PATCH_SHA256 = "f743de89e1079402f5b1742daed22ec50357949cc4c9ab824b39f486a4815f53"
 
 
 def _validate_https_repo_url(dependency_name: str, repo_url: object) -> None:
@@ -164,6 +187,10 @@ def _validate_dependency_lock(lock_data: object) -> dict[str, dict[str, object]]
         raise ValueError("依赖 susfs4ksu.mayfly_compat_patch_path 与固定路径不一致")
     if susfs.get("mayfly_compat_patch_sha256") != _MAYFLY_COMPAT_PATCH_SHA256:
         raise ValueError("依赖 susfs4ksu.mayfly_compat_patch_sha256 与固定哈希不一致")
+    if susfs.get("mayfly_task_mmu_patch_path") != _MAYFLY_TASK_MMU_PATCH_PATH:
+        raise ValueError("依赖 susfs4ksu.mayfly_task_mmu_patch_path 与固定路径不一致")
+    if susfs.get("mayfly_task_mmu_patch_sha256") != _MAYFLY_TASK_MMU_PATCH_SHA256:
+        raise ValueError("依赖 susfs4ksu.mayfly_task_mmu_patch_sha256 与固定哈希不一致")
 
     kernelsu = dependencies["sukisu_ultra"]
     if kernelsu.get("version_name") != "4.1.3":
@@ -178,6 +205,16 @@ def _validate_dependency_lock(lock_data: object) -> dict[str, dict[str, object]]
         raise ValueError("依赖 sukisu_patch.kpm_patch_sha256 必须匹配固定的完整 64 位 SHA256")
     if type(kpm.get("kpm_patch_size")) is not int or kpm["kpm_patch_size"] != 6013320:
         raise ValueError("依赖 sukisu_patch.kpm_patch_size 必须固定为整数 6013320")
+    if kpm.get("hide_stuff_patch_path") != _HIDE_STUFF_PATCH_PATH:
+        raise ValueError("依赖 sukisu_patch.hide_stuff_patch_path 与固定路径不一致")
+    if kpm.get("hide_stuff_patch_sha256") != _HIDE_STUFF_PATCH_SHA256:
+        raise ValueError("依赖 sukisu_patch.hide_stuff_patch_sha256 与固定哈希不一致")
+    if type(kpm.get("hide_stuff_patch_size")) is not int or kpm["hide_stuff_patch_size"] != _HIDE_STUFF_PATCH_SIZE:
+        raise ValueError("依赖 sukisu_patch.hide_stuff_patch_size 与固定大小不一致")
+    if kpm.get("mayfly_hide_stuff_patch_path") != _MAYFLY_HIDE_STUFF_PATCH_PATH:
+        raise ValueError("依赖 sukisu_patch.mayfly_hide_stuff_patch_path 与固定路径不一致")
+    if kpm.get("mayfly_hide_stuff_patch_sha256") != _MAYFLY_HIDE_STUFF_PATCH_SHA256:
+        raise ValueError("依赖 sukisu_patch.mayfly_hide_stuff_patch_sha256 与固定哈希不一致")
 
     if dependencies["git_repo"].get("version") != "2.15":
         raise ValueError("依赖 git_repo.version 必须固定为 2.15")

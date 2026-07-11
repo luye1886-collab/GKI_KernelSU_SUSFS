@@ -32,7 +32,14 @@ KPM_PATCH_PATH = "kpm/patch_linux"
 KPM_PATCH_SHA256 = "1bd00563e9d8fbbd11a16c0c1c59c5add406e6c5c92557def50f93d6f0aebe2d"
 KPM_PATCH_SIZE = 6013320
 SUKISU_SUSFS_COMPAT_PATCH_PATH = "patches/sukisu-v4.1.3-susfs-v2.2.0-compat.patch"
-SUKISU_SUSFS_COMPAT_PATCH_SHA256 = "8b0493e5485196ac808076906479feb9a6955c1d19abaeeb59509ba8105c09fe"
+SUKISU_SUSFS_COMPAT_PATCH_SHA256 = "32cd15ec68f7c6fb00857f01144da905b60d547ccb6141a92d35aa1261b6c994"
+MAYFLY_TASK_MMU_PATCH_PATH = "patches/mayfly-android12-5.10-susfs-task-mmu.patch"
+MAYFLY_TASK_MMU_PATCH_SHA256 = "c3e70b66d8b67aa29ab6935954deb7cf4402e44e231b73e7cee1a4dedc0326c1"
+HIDE_STUFF_PATCH_PATH = "69_hide_stuff.patch"
+HIDE_STUFF_PATCH_SHA256 = "59965d78e4ff2d7a427b8c2a0ddfedbb75693bda60934ec9bdc4d7627fb666a5"
+HIDE_STUFF_PATCH_SIZE = 2601
+MAYFLY_HIDE_STUFF_PATCH_PATH = "patches/mayfly-android12-5.10-69-hide-stuff.patch"
+MAYFLY_HIDE_STUFF_PATCH_SHA256 = "f743de89e1079402f5b1742daed22ec50357949cc4c9ab824b39f486a4815f53"
 ARM64_IMAGE_MIN_SIZE = 8 * 1024 * 1024
 ARM64_IMAGE_MAX_SIZE = 256 * 1024 * 1024
 ARM64_IMAGE_MAGIC = b"ARMd"
@@ -134,17 +141,8 @@ PROFILE_SPECS = {
 }
 
 EXCLUDED_PATCHES = {
-    "SukiSU_patch/69_hide_stuff.patch": (
-        "Excluded because proc maps/path falsification is a third-party detection bypass."
-    ),
-    "SukiSU-Ultra/kernel/feature/uts_spoof.c": (
-        "Excluded at compile time because kernel release/version spoof is outside the defensive scope."
-    ),
     "SukiSU_patch/other/zram/zram_patch/5.10/lz4kd.patch:kernel/module.c": (
         "Excluded because it weakens module version checks and rewrites module blacklist handling."
-    ),
-    "susfs4ksu/kernel_patches/50_add_susfs_in_gki-android12-5.10.patch:fs/proc/task_mmu.c": (
-        "Excluded because it only supports disabled map, kstat, and open-redirect concealment features."
     ),
 }
 
@@ -157,16 +155,19 @@ PATCH_EXCLUSIONS = {
     "lz4kd": ("kernel/module.c",),
 }
 
-SUSFS_CONCEALMENT_CONFIGS = (
+SUSFS_HIDE_CONFIGS = (
     "CONFIG_KSU_SUSFS_SUS_PATH",
     "CONFIG_KSU_SUSFS_SUS_MOUNT",
     "CONFIG_KSU_SUSFS_SUS_KSTAT",
-    "CONFIG_KSU_SUSFS_SPOOF_UNAME",
-    "CONFIG_KSU_SUSFS_ENABLE_LOG",
     "CONFIG_KSU_SUSFS_HIDE_KSU_SUSFS_SYMBOLS",
-    "CONFIG_KSU_SUSFS_SPOOF_CMDLINE_OR_BOOTCONFIG",
     "CONFIG_KSU_SUSFS_OPEN_REDIRECT",
     "CONFIG_KSU_SUSFS_SUS_MAP",
+)
+
+SUSFS_DISABLED_CONFIGS = (
+    "CONFIG_KSU_SUSFS_SPOOF_UNAME",
+    "CONFIG_KSU_SUSFS_ENABLE_LOG",
+    "CONFIG_KSU_SUSFS_SPOOF_CMDLINE_OR_BOOTCONFIG",
 )
 
 KMI_GUARDS = {
@@ -290,6 +291,24 @@ def load_dependencies(lock_path: Path = DEFAULT_LOCK_PATH) -> dict[str, dict[str
         raise ValueError("sukisu_patch kpm_patch_sha256 必须匹配固定的完整 64 位 SHA256")
     if type(kpm.get("kpm_patch_size")) is not int or kpm["kpm_patch_size"] != KPM_PATCH_SIZE:
         raise ValueError(f"sukisu_patch kpm_patch_size 必须固定为整数 {KPM_PATCH_SIZE}")
+    hide_path = _validate_relative_posix_path(
+        "sukisu_patch.hide_stuff_patch_path",
+        kpm.get("hide_stuff_patch_path"),
+    )
+    if hide_path != HIDE_STUFF_PATCH_PATH:
+        raise ValueError("SukiSU hide_stuff 补丁路径与固定值不一致")
+    if kpm.get("hide_stuff_patch_sha256") != HIDE_STUFF_PATCH_SHA256:
+        raise ValueError("SukiSU hide_stuff 补丁 SHA256 与固定值不一致")
+    if type(kpm.get("hide_stuff_patch_size")) is not int or kpm["hide_stuff_patch_size"] != HIDE_STUFF_PATCH_SIZE:
+        raise ValueError(f"SukiSU hide_stuff 补丁大小必须固定为 {HIDE_STUFF_PATCH_SIZE}")
+    hide_rebase_path = _validate_relative_posix_path(
+        "sukisu_patch.mayfly_hide_stuff_patch_path",
+        kpm.get("mayfly_hide_stuff_patch_path"),
+    )
+    if hide_rebase_path != MAYFLY_HIDE_STUFF_PATCH_PATH:
+        raise ValueError("Mayfly hide_stuff 重基补丁路径与固定值不一致")
+    if kpm.get("mayfly_hide_stuff_patch_sha256") != MAYFLY_HIDE_STUFF_PATCH_SHA256:
+        raise ValueError("Mayfly hide_stuff 重基补丁 SHA256 与固定值不一致")
     susfs = dependencies.get("susfs4ksu")
     if not isinstance(susfs, dict):
         raise ValueError("依赖锁缺少必需条目: susfs4ksu")
@@ -301,6 +320,14 @@ def load_dependencies(lock_path: Path = DEFAULT_LOCK_PATH) -> dict[str, dict[str
         raise ValueError("SukiSU/SUSFS 兼容补丁路径与固定值不一致")
     if susfs.get("mayfly_compat_patch_sha256") != SUKISU_SUSFS_COMPAT_PATCH_SHA256:
         raise ValueError("SukiSU/SUSFS 兼容补丁 SHA256 与固定值不一致")
+    task_mmu_path = _validate_relative_posix_path(
+        "susfs4ksu.mayfly_task_mmu_patch_path",
+        susfs.get("mayfly_task_mmu_patch_path"),
+    )
+    if task_mmu_path != MAYFLY_TASK_MMU_PATCH_PATH:
+        raise ValueError("Mayfly SUSFS task_mmu 补丁路径与固定值不一致")
+    if susfs.get("mayfly_task_mmu_patch_sha256") != MAYFLY_TASK_MMU_PATCH_SHA256:
+        raise ValueError("Mayfly SUSFS task_mmu 补丁 SHA256 与固定值不一致")
     return dependencies
 
 
@@ -344,23 +371,36 @@ def dependency_names_for_profile(source: SourceSpec, profile: ProfileSpec) -> tu
         source.common_dependency,
         "sukisu_ultra",
         "susfs4ksu",
+        "sukisu_patch",
     ]
-    if profile.kpm or profile.zram_lz4kd:
-        names.append("sukisu_patch")
     if profile.bbg:
         names.append("baseband_guard")
     return tuple(names)
 
 
-def planned_patch_paths(profile: ProfileSpec) -> tuple[str, ...]:
+def planned_patch_paths(source: SourceSpec, profile: ProfileSpec) -> tuple[str, ...]:
     patches = [
         "kernel_patches/KernelSU/10_enable_susfs_for_ksu.patch",
         SUKISU_SUSFS_COMPAT_PATCH_PATH,
         "kernel_patches/50_add_susfs_in_gki-android12-5.10.patch",
     ]
+    patches.append(MAYFLY_TASK_MMU_PATCH_PATH)
+    patches.append(MAYFLY_HIDE_STUFF_PATCH_PATH)
     if profile.zram_lz4kd:
         patches.append("other/zram/zram_patch/5.10/lz4kd.patch")
     return tuple(patches)
+
+
+def hide_stuff_source_audit(
+    dependency: Mapping[str, object],
+) -> dict[str, object]:
+    return {
+        "path": dependency.get("hide_stuff_patch_path"),
+        "sha256": dependency.get("hide_stuff_patch_sha256"),
+        "size": dependency.get("hide_stuff_patch_size"),
+        "canonical_eol": "LF",
+        "applied_via": dependency.get("mayfly_hide_stuff_patch_path"),
+    }
 
 
 def clone_pinned_dependency(
@@ -811,6 +851,7 @@ def copy_tree_contents_strict(source_dir: Path, destination_dir: Path) -> int:
 
 def integrate_susfs(
     runner: CommandRunner,
+    source: SourceSpec,
     common_dir: Path,
     kernelsu_dir: Path,
     susfs_dir: Path,
@@ -848,6 +889,29 @@ def integrate_susfs(
         common_patch,
         common_dir,
         excluded_paths=PATCH_EXCLUSIONS["susfs_common"],
+    )
+    task_mmu_patch, _ = validate_local_task_mmu_patch(susfs_dependency)
+    apply_git_patch_strict(
+        runner,
+        task_mmu_patch,
+        common_dir,
+        whitespace="error-all",
+    )
+
+
+def integrate_hide_stuff(
+    runner: CommandRunner,
+    common_dir: Path,
+    patch_repo: Path,
+    dependency: Mapping[str, object],
+) -> None:
+    validate_hide_stuff_source_patch(patch_repo, dependency)
+    rebased_patch, _ = validate_local_hide_stuff_patch(dependency)
+    apply_git_patch_strict(
+        runner,
+        rebased_patch,
+        Path(common_dir),
+        whitespace="error-all",
     )
 
 
@@ -934,7 +998,8 @@ def profile_kconfig(
         "CONFIG_KSU_DISABLE_POLICY": "n",
         "CONFIG_KSU_SUSFS": "y",
     }
-    values.update({symbol: "n" for symbol in SUSFS_CONCEALMENT_CONFIGS})
+    values.update({symbol: "y" for symbol in SUSFS_HIDE_CONFIGS})
+    values.update({symbol: "n" for symbol in SUSFS_DISABLED_CONFIGS})
     values["CONFIG_KPM"] = "y" if profile.kpm else "n"
 
     if profile.zram_lz4kd:
@@ -1141,6 +1206,102 @@ def validate_local_compat_patch(
     return patch_path, actual_hash
 
 
+def _validate_local_workflow_patch(
+    dependency: Mapping[str, object],
+    *,
+    path_field: str,
+    hash_field: str,
+    expected_path: str,
+    expected_hash: str,
+    label: str,
+) -> tuple[Path, str]:
+    relative_path = _validate_relative_posix_path(path_field, dependency.get(path_field))
+    if relative_path != expected_path:
+        raise ValueError(f"{label}路径与固定值不一致")
+    locked_hash = dependency.get(hash_field)
+    if locked_hash != expected_hash:
+        raise ValueError(f"{label} SHA256 元数据与固定值不一致")
+
+    workflow_root = WORKFLOW_DIR.resolve()
+    patch_path = _require_regular_file(
+        WORKFLOW_DIR / Path(*relative_path.split("/")),
+        label,
+    ).resolve()
+    try:
+        patch_path.relative_to(workflow_root)
+    except ValueError as exc:
+        raise ValueError(f"{label}越出 workflow 目录") from exc
+    actual_hash = sha256_file(patch_path)
+    if actual_hash != locked_hash:
+        raise RuntimeError(f"{label} SHA256 与依赖锁不一致")
+    return patch_path, actual_hash
+
+
+def validate_local_task_mmu_patch(
+    susfs_dependency: Mapping[str, object],
+) -> tuple[Path, str]:
+    return _validate_local_workflow_patch(
+        susfs_dependency,
+        path_field="mayfly_task_mmu_patch_path",
+        hash_field="mayfly_task_mmu_patch_sha256",
+        expected_path=MAYFLY_TASK_MMU_PATCH_PATH,
+        expected_hash=MAYFLY_TASK_MMU_PATCH_SHA256,
+        label="Mayfly SUSFS task_mmu 补丁",
+    )
+
+
+def validate_local_hide_stuff_patch(
+    dependency: Mapping[str, object],
+) -> tuple[Path, str]:
+    return _validate_local_workflow_patch(
+        dependency,
+        path_field="mayfly_hide_stuff_patch_path",
+        hash_field="mayfly_hide_stuff_patch_sha256",
+        expected_path=MAYFLY_HIDE_STUFF_PATCH_PATH,
+        expected_hash=MAYFLY_HIDE_STUFF_PATCH_SHA256,
+        label="Mayfly hide_stuff 重基补丁",
+    )
+
+
+def validate_hide_stuff_source_patch(
+    patch_repo: Path,
+    dependency: Mapping[str, object],
+) -> tuple[Path, str]:
+    patch_repo = Path(patch_repo)
+    if patch_repo.is_symlink() or not patch_repo.is_dir():
+        raise NotADirectoryError(f"SukiSU_patch 目录不可用: {patch_repo}")
+    relative_path = _validate_relative_posix_path(
+        "hide_stuff_patch_path",
+        dependency.get("hide_stuff_patch_path"),
+    )
+    if relative_path != HIDE_STUFF_PATCH_PATH:
+        raise ValueError("hide_stuff 来源补丁路径与固定值不一致")
+    if dependency.get("hide_stuff_patch_sha256") != HIDE_STUFF_PATCH_SHA256:
+        raise ValueError("hide_stuff 来源补丁 SHA256 元数据与固定值不一致")
+    if type(dependency.get("hide_stuff_patch_size")) is not int or dependency["hide_stuff_patch_size"] != HIDE_STUFF_PATCH_SIZE:
+        raise ValueError("hide_stuff 来源补丁大小与固定值不一致")
+
+    repo_root = patch_repo.resolve()
+    patch_path = _require_regular_file(
+        patch_repo / Path(*relative_path.split("/")),
+        "hide_stuff 来源补丁",
+    ).resolve()
+    try:
+        patch_path.relative_to(repo_root)
+    except ValueError as exc:
+        raise ValueError("hide_stuff 来源补丁越出固定仓库") from exc
+    patch_bytes = patch_path.read_bytes()
+    canonical_bytes = patch_bytes.replace(b"\r\n", b"\n")
+    if b"\r" in canonical_bytes:
+        raise RuntimeError("hide_stuff 来源补丁包含非规范 CR 字节")
+    if len(canonical_bytes) != HIDE_STUFF_PATCH_SIZE:
+        raise RuntimeError("hide_stuff 来源补丁大小与依赖锁不一致")
+    actual_hash = hashlib.sha256(canonical_bytes).hexdigest()
+    if actual_hash != HIDE_STUFF_PATCH_SHA256:
+        raise RuntimeError("hide_stuff 来源补丁 SHA256 与依赖锁不一致")
+    return patch_path, actual_hash
+
+
 def validate_kernelsu_hardening(kernelsu_dir: Path) -> None:
     kernel_dir = Path(kernelsu_dir) / "kernel"
     paths = {
@@ -1154,29 +1315,55 @@ def validate_kernelsu_hardening(kernelsu_dir: Path) -> None:
             kernel_dir / "supercall" / "dispatch.c",
             "KernelSU dispatch.c",
         ),
+        "resolver": _require_regular_file(
+            kernel_dir / "infra" / "symbol_resolver.c",
+            "KernelSU symbol_resolver.c",
+        ),
+        "uts": _require_regular_file(
+            kernel_dir / "feature" / "uts_spoof.c",
+            "KernelSU uts_spoof.c",
+        ),
     }
     contents = {name: path.read_text(encoding="utf-8") for name, path in paths.items()}
-    forbidden = {
-        "Kbuild": ("feature/uts_spoof.o",),
-        "init": ("ksu_spoof_version", "ksu_init_symbol_resolver"),
-        "dispatch": ("feature/uts_spoof.h", "do_set_spoof_version", "KSU_IOCTL_SET_SPOOF_VERSION"),
-    }
-    for name, tokens in forbidden.items():
-        present = [token for token in tokens if token in contents[name]]
-        if present:
-            raise RuntimeError(f"KernelSU UTS 版本伪装编译路径未禁用: {name}: {', '.join(present)}")
-
     required = {
-        "init": ("susfs_init();", "ksu_sucompat_init();", "ksu_setuid_hook_init();"),
+        "Kbuild": ("infra/symbol_resolver.o", "feature/uts_spoof.o"),
+        "init": (
+            "susfs_init();",
+            "ksu_sucompat_init();",
+            "ksu_setuid_hook_init();",
+            "ksu_init_symbol_resolver();",
+            "ksu_spoof_version(spoof_release, spoof_version);",
+        ),
         "profile": (
             "int escape_to_root_for_init(void);",
             "void escape_to_root_for_cmd_su(uid_t target_uid, pid_t target_pid);",
+        ),
+        "dispatch": (
+            'feature/uts_spoof.h',
+            "do_set_spoof_version",
+            "KSU_IOCTL_SET_SPOOF_VERSION",
+        ),
+        "resolver": ("void __init ksu_init_symbol_resolver()",),
+        "uts": (
+            'find_kernel_symbol_exact("uts_sem")',
+            'find_kernel_symbol_exact("init_uts_ns")',
+            "int ksu_set_spoof_version",
         ),
     }
     for name, tokens in required.items():
         missing = [token for token in tokens if token not in contents[name]]
         if missing:
             raise RuntimeError(f"KernelSU/SUSFS 兼容集成不完整: {name}: {', '.join(missing)}")
+
+    root_only_uts_entry = re.compile(
+        r"\{\s*"
+        r"\.cmd\s*=\s*KSU_IOCTL_SET_SPOOF_VERSION,\s*"
+        r'\.name\s*=\s*"SET_SPOOF_VERSION",\s*'
+        r"\.handler\s*=\s*do_set_spoof_version,\s*"
+        r"\.perm_check\s*=\s*only_root\s*,?\s*\}",
+    )
+    if root_only_uts_entry.search(contents["dispatch"]) is None:
+        raise RuntimeError("KernelSU UTS ioctl 未限制为 root")
 
 
 def validate_kpm_patcher(
@@ -1401,18 +1588,30 @@ def make_build_info(
         "final_config_validation": True,
         "excluded_patches": dict(EXCLUDED_PATCHES),
         "patch_exclusions": dict(PATCH_EXCLUSIONS),
-        "applied_patches": list(planned_patch_paths(profile)),
+        "applied_patches": list(planned_patch_paths(source, profile)),
         "local_patches": {
             "sukisu_susfs_compat": {
                 "path": dependencies["susfs4ksu"].get("mayfly_compat_patch_path"),
                 "sha256": dependencies["susfs4ksu"].get("mayfly_compat_patch_sha256"),
-            }
+            },
+            "hide_stuff_rebase": {
+                "path": dependencies["sukisu_patch"].get("mayfly_hide_stuff_patch_path"),
+                "sha256": dependencies["sukisu_patch"].get("mayfly_hide_stuff_patch_sha256"),
+            },
         },
+        "source_patch_audits": {
+            "hide_stuff": hide_stuff_source_audit(dependencies["sukisu_patch"]),
+        },
+        "uts_spoof": {"compiled": True, "ioctl_permission": "root"},
         "kernelsu": _kernelsu_version_info(
             version_name=dependencies["sukisu_ultra"].get("version_name"),
             version_code=dependencies["sukisu_ultra"].get("version_code"),
             commit=dependencies["sukisu_ultra"].get("commit"),
         ),
+    }
+    info["local_patches"]["susfs_task_mmu"] = {
+        "path": dependencies["susfs4ksu"].get("mayfly_task_mmu_patch_path"),
+        "sha256": dependencies["susfs4ksu"].get("mayfly_task_mmu_patch_sha256"),
     }
     if kpm_audit is not None:
         if not profile.kpm:
@@ -1512,7 +1711,10 @@ class MayflyBuilder:
                 }
                 for name in needed
             },
-            "patches": list(planned_patch_paths(self.profile)),
+            "patches": list(planned_patch_paths(self.source, self.profile)),
+            "source_patch_audits": {
+                "hide_stuff": hide_stuff_source_audit(dependencies["sukisu_patch"]),
+            },
             "excluded_patches": dict(EXCLUDED_PATCHES),
         }
 
@@ -1627,6 +1829,7 @@ class MayflyBuilder:
         repositories = {
             "kernelsu": work_dir / "KernelSU",
             "susfs": work_dir / "susfs4ksu",
+            "sukisu_patch": work_dir / "SukiSU_patch",
         }
         clone_pinned_dependency(
             self.runner,
@@ -1638,13 +1841,11 @@ class MayflyBuilder:
             dependencies["susfs4ksu"],
             repositories["susfs"],
         )
-        if self.profile.kpm or self.profile.zram_lz4kd:
-            repositories["sukisu_patch"] = work_dir / "SukiSU_patch"
-            clone_pinned_dependency(
-                self.runner,
-                dependencies["sukisu_patch"],
-                repositories["sukisu_patch"],
-            )
+        clone_pinned_dependency(
+            self.runner,
+            dependencies["sukisu_patch"],
+            repositories["sukisu_patch"],
+        )
         if self.profile.bbg:
             repositories["bbg"] = work_dir / "Baseband-guard"
             clone_pinned_dependency(
@@ -1667,6 +1868,7 @@ class MayflyBuilder:
         integrate_kernelsu(common_dir, repositories["kernelsu"])
         integrate_susfs(
             self.runner,
+            self.source,
             common_dir,
             repositories["kernelsu"],
             repositories["susfs"],
@@ -1674,6 +1876,12 @@ class MayflyBuilder:
             dependencies["susfs4ksu"],
         )
         validate_kernelsu_hardening(repositories["kernelsu"])
+        integrate_hide_stuff(
+            self.runner,
+            common_dir,
+            repositories["sukisu_patch"],
+            dependencies["sukisu_patch"],
+        )
         if self.profile.zram_lz4kd:
             integrate_lz4kd(self.runner, common_dir, repositories["sukisu_patch"])
         if self.profile.bbg:

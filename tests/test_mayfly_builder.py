@@ -190,7 +190,7 @@ class SourceAndProfileTests(unittest.TestCase):
                     flags,
                 )
 
-    def test_root_has_no_optional_dependencies_or_patches(self):
+    def test_root_has_only_required_dependencies_and_patches(self):
         dependencies = builder.dependency_names_for_profile(
             builder.SOURCE_SPECS["stock-5.10.226"],
             builder.PROFILE_SPECS["root"],
@@ -198,16 +198,21 @@ class SourceAndProfileTests(unittest.TestCase):
         self.assertIn("sukisu_ultra", dependencies)
         self.assertIn("susfs4ksu", dependencies)
         self.assertIn("git_repo", dependencies)
-        self.assertNotIn("sukisu_patch", dependencies)
+        self.assertIn("sukisu_patch", dependencies)
         self.assertNotIn("baseband_guard", dependencies)
 
-        patches = builder.planned_patch_paths(builder.PROFILE_SPECS["root"])
+        patches = builder.planned_patch_paths(
+            builder.SOURCE_SPECS["stock-5.10.226"],
+            builder.PROFILE_SPECS["root"],
+        )
         self.assertEqual(
             patches,
             (
                 "kernel_patches/KernelSU/10_enable_susfs_for_ksu.patch",
                 "patches/sukisu-v4.1.3-susfs-v2.2.0-compat.patch",
                 "kernel_patches/50_add_susfs_in_gki-android12-5.10.patch",
+                "patches/mayfly-android12-5.10-susfs-task-mmu.patch",
+                "patches/mayfly-android12-5.10-69-hide-stuff.patch",
             ),
         )
 
@@ -221,13 +226,24 @@ class SourceAndProfileTests(unittest.TestCase):
         self.assertNotIn("baseband_guard", balanced)
         self.assertIn("baseband_guard", bbg)
 
-    def test_forbidden_hide_patch_is_never_planned(self):
-        forbidden = "SukiSU_patch/69_hide_stuff.patch"
+    def test_hide_patch_is_audited_and_rebase_is_planned_for_every_profile(self):
+        hide_patch = "69_hide_stuff.patch"
+        rebased_patch = "patches/mayfly-android12-5.10-69-hide-stuff.patch"
         for profile in builder.PROFILE_SPECS.values():
             with self.subTest(profile=profile.name):
-                self.assertNotIn(forbidden, builder.planned_patch_paths(profile))
-        self.assertIn(forbidden, builder.EXCLUDED_PATCHES)
-        self.assertIn("third-party detection bypass", builder.EXCLUDED_PATCHES[forbidden])
+                planned = builder.planned_patch_paths(
+                    builder.SOURCE_SPECS["stock-5.10.226"],
+                    profile,
+                )
+                self.assertNotIn(hide_patch, planned)
+                self.assertIn(rebased_patch, planned)
+        self.assertNotIn("SukiSU_patch/69_hide_stuff.patch", builder.EXCLUDED_PATCHES)
+        self.assertEqual(builder.HIDE_STUFF_PATCH_PATH, hide_patch)
+        self.assertEqual(
+            builder.HIDE_STUFF_PATCH_SHA256,
+            "59965d78e4ff2d7a427b8c2a0ddfedbb75693bda60934ec9bdc4d7627fb666a5",
+        )
+        self.assertEqual(builder.HIDE_STUFF_PATCH_SIZE, 2601)
 
     def test_patch_exclusions_are_narrow_and_security_bounded(self):
         self.assertEqual(
@@ -242,8 +258,8 @@ class SourceAndProfileTests(unittest.TestCase):
             },
         )
         excluded = builder.EXCLUDED_PATCHES
-        self.assertIn("SukiSU-Ultra/kernel/feature/uts_spoof.c", excluded)
-        self.assertIn("version spoof", excluded["SukiSU-Ultra/kernel/feature/uts_spoof.c"])
+        self.assertNotIn("SukiSU-Ultra/kernel/feature/uts_spoof.c", excluded)
+        self.assertNotIn("SukiSU_patch/69_hide_stuff.patch", excluded)
         self.assertIn("SukiSU_patch/other/zram/zram_patch/5.10/lz4kd.patch:kernel/module.c", excluded)
         self.assertIn(
             "module version checks",
@@ -441,23 +457,99 @@ class MayflyLockValidationTests(unittest.TestCase):
         )
         self.assertEqual(
             susfs["mayfly_compat_patch_sha256"],
-            "8b0493e5485196ac808076906479feb9a6955c1d19abaeeb59509ba8105c09fe",
+            "32cd15ec68f7c6fb00857f01144da905b60d547ccb6141a92d35aa1261b6c994",
         )
         patch_path, patch_hash = builder.validate_local_compat_patch(susfs)
         self.assertEqual(patch_path, PATCHES_DIR / "sukisu-v4.1.3-susfs-v2.2.0-compat.patch")
         self.assertEqual(patch_hash, susfs["mayfly_compat_patch_sha256"])
+
+    def test_lock_records_local_mayfly_task_mmu_patch(self):
+        dependencies = builder.load_dependencies()
+        susfs = dependencies["susfs4ksu"]
+        self.assertEqual(
+            susfs["mayfly_task_mmu_patch_path"],
+            "patches/mayfly-android12-5.10-susfs-task-mmu.patch",
+        )
+        patch_path, patch_hash = builder.validate_local_task_mmu_patch(susfs)
+        self.assertEqual(
+            patch_path,
+            PATCHES_DIR / "mayfly-android12-5.10-susfs-task-mmu.patch",
+        )
+        self.assertEqual(patch_hash, susfs["mayfly_task_mmu_patch_sha256"])
+
+    def test_lock_records_exact_hide_stuff_patch(self):
+        dependency = builder.load_dependencies()["sukisu_patch"]
+        self.assertEqual(dependency["hide_stuff_patch_path"], "69_hide_stuff.patch")
+        self.assertEqual(
+            dependency["hide_stuff_patch_sha256"],
+            "59965d78e4ff2d7a427b8c2a0ddfedbb75693bda60934ec9bdc4d7627fb666a5",
+        )
+        self.assertEqual(dependency["hide_stuff_patch_size"], 2601)
+
+    def test_hide_stuff_source_audit_uses_canonical_lf_bytes(self):
+        canonical = b"first line\nsecond line\n"
+        expected_hash = hashlib.sha256(canonical).hexdigest()
+        dependency = {
+            "hide_stuff_patch_path": "69_hide_stuff.patch",
+            "hide_stuff_patch_sha256": expected_hash,
+            "hide_stuff_patch_size": len(canonical),
+        }
+        with tempfile.TemporaryDirectory(dir=REPO_ROOT) as temporary_dir:
+            patch_repo = Path(temporary_dir)
+            patch_path = patch_repo / "69_hide_stuff.patch"
+            patch_path.write_bytes(canonical.replace(b"\n", b"\r\n"))
+            with mock.patch.object(builder, "HIDE_STUFF_PATCH_SHA256", expected_hash), mock.patch.object(
+                builder,
+                "HIDE_STUFF_PATCH_SIZE",
+                len(canonical),
+            ):
+                validated_path, actual_hash = builder.validate_hide_stuff_source_patch(
+                    patch_repo,
+                    dependency,
+                )
+            self.assertEqual(validated_path, patch_path)
+            self.assertEqual(actual_hash, expected_hash)
+
+            patch_path.write_bytes(b"first line\rsecond line\n")
+            with mock.patch.object(builder, "HIDE_STUFF_PATCH_SHA256", expected_hash), mock.patch.object(
+                builder,
+                "HIDE_STUFF_PATCH_SIZE",
+                len(canonical),
+            ), self.assertRaisesRegex(RuntimeError, "CR"):
+                builder.validate_hide_stuff_source_patch(patch_repo, dependency)
 
     def test_loader_rejects_local_compat_patch_metadata_drift(self):
         original = json.loads(LOCK_PATH.read_text(encoding="utf-8"))
         cases = (
             ("mayfly_compat_patch_path", "../compat.patch"),
             ("mayfly_compat_patch_sha256", "0" * 64),
-            ("mayfly_compat_patch_sha256", "8B0493E5485196AC808076906479FEB9A6955C1D19ABAEEB59509BA8105C09FE"),
+            ("mayfly_compat_patch_sha256", "32CD15EC68F7C6FB00857F01144DA905B60D547CCB6141A92D35AA1261B6C994"),
         )
         for field, value in cases:
             with self.subTest(field=field), tempfile.TemporaryDirectory(dir=REPO_ROOT) as temporary_dir:
                 payload = json.loads(json.dumps(original))
                 payload["dependencies"]["susfs4ksu"][field] = value
+                lock_path = self._write_lock(Path(temporary_dir), payload)
+                with self.assertRaises(ValueError):
+                    builder.load_dependencies(lock_path)
+
+    def test_loader_rejects_task_mmu_and_hide_patch_metadata_drift(self):
+        original = json.loads(LOCK_PATH.read_text(encoding="utf-8"))
+        cases = (
+            ("susfs4ksu", "mayfly_task_mmu_patch_path", "../task_mmu.patch"),
+            ("susfs4ksu", "mayfly_task_mmu_patch_sha256", "0" * 64),
+            ("sukisu_patch", "hide_stuff_patch_path", "../69_hide_stuff.patch"),
+            ("sukisu_patch", "hide_stuff_patch_sha256", "0" * 64),
+            ("sukisu_patch", "hide_stuff_patch_size", 2602),
+            ("sukisu_patch", "mayfly_hide_stuff_patch_path", "../hide.patch"),
+            ("sukisu_patch", "mayfly_hide_stuff_patch_sha256", "0" * 64),
+        )
+        for dependency, field, value in cases:
+            with self.subTest(dependency=dependency, field=field), tempfile.TemporaryDirectory(
+                dir=REPO_ROOT
+            ) as temporary_dir:
+                payload = json.loads(json.dumps(original))
+                payload["dependencies"][dependency][field] = value
                 lock_path = self._write_lock(Path(temporary_dir), payload)
                 with self.assertRaises(ValueError):
                     builder.load_dependencies(lock_path)
@@ -844,13 +936,15 @@ class KconfigTests(unittest.TestCase):
         self.assertEqual(disabled.count("# CONFIG_KSU is not set"), 1)
         self.assertNotIn("CONFIG_KSU=y", disabled)
 
-    def test_all_profiles_disable_susfs_concealment(self):
+    def test_all_profiles_enable_susfs_hiding_without_global_spoofing(self):
         for profile in builder.PROFILE_SPECS.values():
             with self.subTest(profile=profile.name):
                 values = builder.profile_kconfig(profile)
                 self.assertEqual(values["CONFIG_KSU"], "y")
                 self.assertEqual(values["CONFIG_KSU_SUSFS"], "y")
-                for symbol in builder.SUSFS_CONCEALMENT_CONFIGS:
+                for symbol in builder.SUSFS_HIDE_CONFIGS:
+                    self.assertEqual(values[symbol], "y")
+                for symbol in builder.SUSFS_DISABLED_CONFIGS:
                     self.assertEqual(values[symbol], "n")
 
     def test_kpm_lz4kd_bbr_and_bbg_follow_profile_layers(self):
@@ -943,7 +1037,8 @@ class KconfigTests(unittest.TestCase):
             "# CONFIG_KSU_DISABLE_POLICY is not set",
             "CONFIG_KSU_SUSFS=y",
         ]
-        lines.extend(f"# {symbol} is not set" for symbol in builder.SUSFS_CONCEALMENT_CONFIGS)
+        lines.extend(f"{symbol}=y" for symbol in builder.SUSFS_HIDE_CONFIGS)
+        lines.extend(f"# {symbol} is not set" for symbol in builder.SUSFS_DISABLED_CONFIGS)
         lines.append(
             "# CONFIG_KPM is not set" if kpm_value == "n" else f"CONFIG_KPM={kpm_value}"
         )
@@ -1251,6 +1346,7 @@ class SourceIntegrationTests(unittest.TestCase):
 
             builder.integrate_susfs(
                 runner,
+                builder.SOURCE_SPECS["stock-5.10.226"],
                 common,
                 ksu,
                 susfs.parent,
@@ -1267,7 +1363,7 @@ class SourceIntegrationTests(unittest.TestCase):
             pinned_kbuild = kbuild.read_text(encoding="utf-8")
             self.assertIn("KSU_VERSION := 40796", pinned_kbuild)
             self.assertIn("KSU_VERSION_FULL := v4.1.3-278d822a@pinned", pinned_kbuild)
-        self.assertEqual(len(runner.calls), 6)
+        self.assertEqual(len(runner.calls), 8)
         self.assertEqual(runner.calls[0][1]["cwd"], ksu)
         self.assertIn("--exclude=kernel/core/init.c", runner.calls[0][0])
         self.assertIn("--exclude=kernel/policy/app_profile.h", runner.calls[0][0])
@@ -1275,6 +1371,11 @@ class SourceIntegrationTests(unittest.TestCase):
         self.assertEqual(runner.calls[2][0][-1], str(PATCHES_DIR / "sukisu-v4.1.3-susfs-v2.2.0-compat.patch"))
         self.assertEqual(runner.calls[4][1]["cwd"], common)
         self.assertIn("--exclude=fs/proc/task_mmu.c", runner.calls[4][0])
+        self.assertEqual(runner.calls[6][1]["cwd"], common)
+        self.assertEqual(
+            runner.calls[6][0][-1],
+            str(PATCHES_DIR / "mayfly-android12-5.10-susfs-task-mmu.patch"),
+        )
 
     def test_kernelsu_kbuild_dynamic_version_block_is_replaced_exactly(self):
         with tempfile.TemporaryDirectory(dir=REPO_ROOT) as temporary_dir:
@@ -1364,44 +1465,113 @@ class SourceIntegrationTests(unittest.TestCase):
             self.assertIn("--exclude=kernel/module.c", command)
             self.assertEqual(kwargs["cwd"], common)
 
-    def test_integrated_kernelsu_rejects_compiled_uts_spoof_paths(self):
+    def test_integrated_kernelsu_requires_complete_uts_spoof_chain(self):
         with tempfile.TemporaryDirectory(dir=REPO_ROOT) as temporary_dir:
             kernel = Path(temporary_dir) / "kernel"
             (kernel / "core").mkdir(parents=True)
+            (kernel / "feature").mkdir()
+            (kernel / "infra").mkdir()
             (kernel / "policy").mkdir()
             (kernel / "supercall").mkdir()
             files = {
-                kernel / "Kbuild": "kernelsu-objs += core/init.o\n",
+                kernel / "Kbuild": (
+                    "kernelsu-objs += core/init.o\n"
+                    "kernelsu-objs += infra/symbol_resolver.o\n"
+                    "kernelsu-objs += feature/uts_spoof.o\n"
+                ),
                 kernel / "core" / "init.c": (
                     "void init(void) {\n"
                     "    susfs_init();\n"
                     "    ksu_sucompat_init();\n"
                     "    ksu_setuid_hook_init();\n"
+                    "    ksu_init_symbol_resolver();\n"
+                    "    ksu_spoof_version(spoof_release, spoof_version);\n"
                     "}\n"
                 ),
                 kernel / "policy" / "app_profile.h": (
                     "int escape_to_root_for_init(void);\n"
                     "void escape_to_root_for_cmd_su(uid_t target_uid, pid_t target_pid);\n"
                 ),
-                kernel / "supercall" / "dispatch.c": "static int dispatch(void) { return 0; }\n",
+                kernel / "supercall" / "dispatch.c": (
+                    '#include "feature/uts_spoof.h"\n'
+                    "static int do_set_spoof_version(void __user *arg) { return 0; }\n"
+                    "{\n"
+                    "    .cmd = KSU_IOCTL_SET_SPOOF_VERSION,\n"
+                    '    .name = "SET_SPOOF_VERSION",\n'
+                    "    .handler = do_set_spoof_version,\n"
+                    "    .perm_check = only_root\n"
+                    "},\n"
+                ),
+                kernel / "feature" / "uts_spoof.c": (
+                    'find_kernel_symbol_exact("uts_sem");\n'
+                    'find_kernel_symbol_exact("init_uts_ns");\n'
+                    "int ksu_set_spoof_version(const char *release, const char *version);\n"
+                ),
+                kernel / "infra" / "symbol_resolver.c": (
+                    "void __init ksu_init_symbol_resolver() {}\n"
+                ),
             }
             for path, content in files.items():
                 path.write_text(content, encoding="utf-8")
 
             builder.validate_kernelsu_hardening(kernel.parent)
 
-            forbidden_cases = (
+            required_cases = (
+                (kernel / "Kbuild", "kernelsu-objs += infra/symbol_resolver.o\n"),
                 (kernel / "Kbuild", "kernelsu-objs += feature/uts_spoof.o\n"),
-                (kernel / "core" / "init.c", "ksu_spoof_version(NULL, NULL);\n"),
-                (kernel / "supercall" / "dispatch.c", "KSU_IOCTL_SET_SPOOF_VERSION\n"),
+                (kernel / "core" / "init.c", "ksu_init_symbol_resolver();\n"),
+                (kernel / "core" / "init.c", "ksu_spoof_version(spoof_release, spoof_version);\n"),
+                (kernel / "supercall" / "dispatch.c", "KSU_IOCTL_SET_SPOOF_VERSION,"),
+                (kernel / "feature" / "uts_spoof.c", 'find_kernel_symbol_exact("uts_sem");\n'),
             )
-            for path, forbidden in forbidden_cases:
+            for path, required in required_cases:
                 with self.subTest(path=path.name):
                     original = path.read_text(encoding="utf-8")
-                    path.write_text(original + forbidden, encoding="utf-8")
-                    with self.assertRaisesRegex(RuntimeError, "UTS"):
+                    path.write_text(original.replace(required, ""), encoding="utf-8")
+                    with self.assertRaisesRegex(RuntimeError, "兼容集成"):
                         builder.validate_kernelsu_hardening(kernel.parent)
                     path.write_text(original, encoding="utf-8")
+
+            dispatch = kernel / "supercall" / "dispatch.c"
+            original = dispatch.read_text(encoding="utf-8")
+            dispatch.write_text(
+                original.replace(".perm_check = only_root", ".perm_check = always_allow"),
+                encoding="utf-8",
+            )
+            with self.assertRaisesRegex(RuntimeError, "root"):
+                builder.validate_kernelsu_hardening(kernel.parent)
+
+    def test_hide_stuff_validates_source_then_strictly_applies_rebase(self):
+        with tempfile.TemporaryDirectory(dir=REPO_ROOT) as temporary_dir:
+            root = Path(temporary_dir)
+            common = root / "common"
+            patch_repo = root / "SukiSU_patch"
+            common.mkdir()
+            patch_repo.mkdir()
+            runner = RecordingRunner()
+            rebased_patch = REPO_ROOT / ".github" / "workflows" / "patches" / (
+                "mayfly-android12-5.10-69-hide-stuff.patch"
+            )
+            dependency = {"locked": True}
+
+            with mock.patch.object(
+                builder,
+                "validate_hide_stuff_source_patch",
+                return_value=(patch_repo / "69_hide_stuff.patch", builder.HIDE_STUFF_PATCH_SHA256),
+            ) as validate_source, mock.patch.object(
+                builder,
+                "validate_local_hide_stuff_patch",
+                return_value=(rebased_patch, builder.MAYFLY_HIDE_STUFF_PATCH_SHA256),
+            ) as validate_rebase:
+                builder.integrate_hide_stuff(runner, common, patch_repo, dependency)
+
+            validate_source.assert_called_once_with(patch_repo, dependency)
+            validate_rebase.assert_called_once_with(dependency)
+            self.assertEqual(len(runner.calls), 2)
+            for command, kwargs in runner.calls:
+                self.assertEqual(command[0:2], ["git", "apply"])
+                self.assertIn(str(rebased_patch), command)
+                self.assertEqual(kwargs["cwd"], common)
 
     def test_bbg_is_non_destructively_integrated_and_blocks_stay_disabled(self):
         with tempfile.TemporaryDirectory(dir=REPO_ROOT) as temporary_dir:
@@ -1461,7 +1631,7 @@ class SourceIntegrationTests(unittest.TestCase):
 
             configured = defconfig.read_text(encoding="utf-8")
             self.assertEqual(configured.count("CONFIG_KSU=y"), 1)
-            self.assertIn("# CONFIG_KSU_SUSFS_SUS_MAP is not set", configured)
+            self.assertIn("CONFIG_KSU_SUSFS_SUS_MAP=y", configured)
             self.assertIn("# CONFIG_BBG_BLOCK_BOOT is not set", configured)
             self.assertIn("# CONFIG_BBG_BLOCK_RECOVERY is not set", configured)
             self.assertIn(
@@ -2024,12 +2194,30 @@ class BuildAndArtifactTests(unittest.TestCase):
                 "post_image": {"sha256": "c" * 64},
             },
         )
-        self.assertIn("SukiSU_patch/69_hide_stuff.patch", info["excluded_patches"])
+        self.assertNotIn("SukiSU_patch/69_hide_stuff.patch", info["excluded_patches"])
         self.assertEqual(info["patch_exclusions"], builder.PATCH_EXCLUSIONS)
         self.assertEqual(
             info["local_patches"]["sukisu_susfs_compat"]["sha256"],
-            "8b0493e5485196ac808076906479feb9a6955c1d19abaeeb59509ba8105c09fe",
+            "32cd15ec68f7c6fb00857f01144da905b60d547ccb6141a92d35aa1261b6c994",
         )
+        self.assertEqual(
+            info["local_patches"]["susfs_task_mmu"]["sha256"],
+            "c3e70b66d8b67aa29ab6935954deb7cf4402e44e231b73e7cee1a4dedc0326c1",
+        )
+        self.assertEqual(
+            info["local_patches"]["hide_stuff_rebase"]["sha256"],
+            "f743de89e1079402f5b1742daed22ec50357949cc4c9ab824b39f486a4815f53",
+        )
+        self.assertEqual(
+            info["source_patch_audits"]["hide_stuff"]["sha256"],
+            "59965d78e4ff2d7a427b8c2a0ddfedbb75693bda60934ec9bdc4d7627fb666a5",
+        )
+        self.assertNotIn("69_hide_stuff.patch", info["applied_patches"])
+        self.assertIn(
+            "patches/mayfly-android12-5.10-69-hide-stuff.patch",
+            info["applied_patches"],
+        )
+        self.assertEqual(info["uts_spoof"], {"compiled": True, "ioctl_permission": "root"})
         self.assertEqual(
             info["dependencies"]["sukisu_ultra"],
             dependencies["sukisu_ultra"]["commit"],
@@ -2162,6 +2350,15 @@ class CliAndWorkflowTests(unittest.TestCase):
                     ).dry_run()
                     self.assertEqual(summary["source"]["name"], source)
                     self.assertEqual(summary["profile"]["name"], profile)
+                    self.assertEqual(
+                        summary["source_patch_audits"]["hide_stuff"]["path"],
+                        "69_hide_stuff.patch",
+                    )
+                    self.assertNotIn("69_hide_stuff.patch", summary["patches"])
+                    self.assertIn(
+                        "patches/mayfly-android12-5.10-69-hide-stuff.patch",
+                        summary["patches"],
+                    )
                     self.assertFalse(workspace.exists())
                     self.assertFalse(artifacts.exists())
 
@@ -2257,7 +2454,19 @@ class CliAndWorkflowTests(unittest.TestCase):
         self.assertIn("shell=False", source)
         self.assertIn("check=True", source)
         self.assertIn("--fuzz=0", source)
-        self.assertNotIn("69_hide_stuff.patch", "\n".join(builder.planned_patch_paths(builder.PROFILE_SPECS["balanced-bbg"])))
+        self.assertIn(
+            "*.patch text eol=lf",
+            (REPO_ROOT / ".gitattributes").read_text(encoding="utf-8"),
+        )
+        self.assertIn(
+            "mayfly-android12-5.10-69-hide-stuff.patch",
+            "\n".join(
+                builder.planned_patch_paths(
+                    builder.SOURCE_SPECS["stock-5.10.226"],
+                    builder.PROFILE_SPECS["balanced-bbg"],
+                )
+            ),
+        )
 
     def test_readme_documents_raw_image_safety_path(self):
         text = README_PATH.read_text(encoding="utf-8")

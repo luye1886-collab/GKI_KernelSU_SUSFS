@@ -50,9 +50,17 @@ VALID_REQUIRED_METADATA = {
         "version": "v2.2.0",
         "patch_path": "kernel_patches",
         "mayfly_compat_patch_path": "patches/sukisu-v4.1.3-susfs-v2.2.0-compat.patch",
-        "mayfly_compat_patch_sha256": "8b0493e5485196ac808076906479feb9a6955c1d19abaeeb59509ba8105c09fe",
+        "mayfly_compat_patch_sha256": "32cd15ec68f7c6fb00857f01144da905b60d547ccb6141a92d35aa1261b6c994",
+        "mayfly_task_mmu_patch_path": "patches/mayfly-android12-5.10-susfs-task-mmu.patch",
+        "mayfly_task_mmu_patch_sha256": "c3e70b66d8b67aa29ab6935954deb7cf4402e44e231b73e7cee1a4dedc0326c1",
     },
-    "sukisu_patch": {"kpm_patch_path": "kpm/patch_linux"},
+    "sukisu_patch": {
+        "kpm_patch_path": "kpm/patch_linux",
+        "hide_stuff_patch_path": "69_hide_stuff.patch",
+        "hide_stuff_patch_sha256": "59965d78e4ff2d7a427b8c2a0ddfedbb75693bda60934ec9bdc4d7627fb666a5",
+        "mayfly_hide_stuff_patch_path": "patches/mayfly-android12-5.10-69-hide-stuff.patch",
+        "mayfly_hide_stuff_patch_sha256": "f743de89e1079402f5b1742daed22ec50357949cc4c9ab824b39f486a4815f53",
+    },
     "baseband_guard": {"setup_path": "setup.sh"},
     "git_repo": {"path": "repo", "version": "2.15"},
     "android_manifest_2024_11": {
@@ -89,7 +97,10 @@ SAFE_PATH_METADATA_FIELDS = (
     ("sukisu_ultra", "setup_path"),
     ("susfs4ksu", "patch_path"),
     ("susfs4ksu", "mayfly_compat_patch_path"),
+    ("susfs4ksu", "mayfly_task_mmu_patch_path"),
     ("sukisu_patch", "kpm_patch_path"),
+    ("sukisu_patch", "hide_stuff_patch_path"),
+    ("sukisu_patch", "mayfly_hide_stuff_patch_path"),
     ("baseband_guard", "setup_path"),
     ("git_repo", "path"),
     ("android_manifest_2024_11", "path"),
@@ -127,6 +138,7 @@ def valid_lock_payload():
         {
             "kpm_patch_sha256": "1bd00563e9d8fbbd11a16c0c1c59c5add406e6c5c92557def50f93d6f0aebe2d",
             "kpm_patch_size": 6013320,
+            "hide_stuff_patch_size": 2601,
         }
     )
     return {"schema_version": 1, "dependencies": dependencies}
@@ -207,7 +219,7 @@ class DependencyLockTests(unittest.TestCase):
         )
         self.assertEqual(
             susfs.get("mayfly_compat_patch_sha256"),
-            "8b0493e5485196ac808076906479feb9a6955c1d19abaeeb59509ba8105c09fe",
+            "32cd15ec68f7c6fb00857f01144da905b60d547ccb6141a92d35aa1261b6c994",
         )
 
     def test_lock_validator_requires_exact_local_compat_patch_hash(self):

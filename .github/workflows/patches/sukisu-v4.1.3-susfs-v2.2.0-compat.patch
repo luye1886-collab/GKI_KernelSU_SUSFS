@@ -1,16 +1,15 @@
 diff --git a/kernel/Kbuild b/kernel/Kbuild
-index 20fa3eda..2a1aa866 100644
+index 20fa3eda..c03fad71 100644
 --- a/kernel/Kbuild
 +++ b/kernel/Kbuild
-@@ -39,8 +39,6 @@ kernelsu-objs += feature/adb_root.o
+@@ -10,6 +10,7 @@ kernelsu-objs += infra/file_wrapper.o
+ kernelsu-objs += infra/event_queue.o
+ kernelsu-objs += infra/seccomp_cache.o
+ kernelsu-objs += infra/su_mount_ns.o
++kernelsu-objs += infra/symbol_resolver.o
  
- kernelsu-objs += feature/selinux_hide.o
- 
--kernelsu-objs += feature/uts_spoof.o
--
- ifdef KBUILD_EXTMOD
- ifeq ($(CONFIG_KSU_DISABLE_MANAGER),y)
- ccflags-y += -DCONFIG_KSU_DISABLE_MANAGER=1
+ ifneq ($(CONFIG_KSU_DISABLE_MANAGER),y)
+ kernelsu-objs += manager/apk_sign.o
 diff --git a/kernel/Kconfig b/kernel/Kconfig
 index eb5b19e2..b82113f3 100644
 --- a/kernel/Kconfig
@@ -25,7 +24,7 @@ index eb5b19e2..b82113f3 100644
  
  config KSU_SUSFS_SUS_MOUNT
 diff --git a/kernel/core/init.c b/kernel/core/init.c
-index a4364598..437682f4 100644
+index a4364598..4154a0e7 100644
 --- a/kernel/core/init.c
 +++ b/kernel/core/init.c
 @@ -6,6 +6,7 @@
@@ -45,15 +44,15 @@ index a4364598..437682f4 100644
  #include "runtime/ksud.h"
  #include "runtime/ksud_boot.h"
  #include "feature/sulog.h"
-@@ -22,19 +21,10 @@
+@@ -22,19 +21,12 @@
  #include "ksu.h"
  #include "infra/file_wrapper.h"
  #include "selinux/selinux.h"
 -#include "hook/syscall_hook.h"
  #include "feature/adb_root.h"
  #include "feature/selinux_hide.h"
--#include "feature/uts_spoof.h"
--#include "infra/symbol_resolver.h"
+ #include "feature/uts_spoof.h"
+ #include "infra/symbol_resolver.h"
 -
 -#if defined(__x86_64__)
 -#include <asm/cpufeature.h>
@@ -67,7 +66,7 @@ index a4364598..437682f4 100644
  
  // workaround for A12-5.10 kernel
  // Some third-party kernel (e.g. linegaeOS) uses wrong toolchain, which supports
-@@ -72,7 +62,6 @@ __attribute__((naked)) int __init kernelsu_init_early(void)
+@@ -72,7 +64,6 @@ __attribute__((naked)) int __init kernelsu_init_early(void)
  #endif
  
  struct cred *ksu_cred;
@@ -75,16 +74,8 @@ index a4364598..437682f4 100644
  
  #ifdef CONFIG_KSU_DEBUG
  bool allow_shell = true;
-@@ -84,36 +73,8 @@ module_param(allow_shell, bool, 0);
- bool ksu_no_custom_rc = false;
- module_param_named(norc, ksu_no_custom_rc, bool, 0);
+@@ -92,28 +83,6 @@ module_param(spoof_version, charp, 0);
  
--static char *spoof_release = NULL;
--module_param(spoof_release, charp, 0);
--
--static char *spoof_version = NULL;
--module_param(spoof_version, charp, 0);
--
  int __init kernelsu_init(void)
  {
 -#if defined(__x86_64__)
@@ -112,7 +103,7 @@ index a4364598..437682f4 100644
  #ifdef CONFIG_KSU_DEBUG
      pr_alert("*************************************************************");
      pr_alert("**     NOTICE NOTICE NOTICE NOTICE NOTICE NOTICE NOTICE    **");
-@@ -123,6 +84,7 @@ int __init kernelsu_init(void)
+@@ -123,6 +92,7 @@ int __init kernelsu_init(void)
      pr_alert("**     NOTICE NOTICE NOTICE NOTICE NOTICE NOTICE NOTICE    **");
      pr_alert("*************************************************************");
  #endif
@@ -120,16 +111,10 @@ index a4364598..437682f4 100644
      if (allow_shell) {
          pr_alert("shell is allowed at init!");
      }
-@@ -133,80 +95,29 @@ int __init kernelsu_init(void)
-         return -ENOSYS;
+@@ -139,74 +109,29 @@ int __init kernelsu_init(void)
+         ksu_spoof_version(spoof_release, spoof_version);
      }
  
--    ksu_init_symbol_resolver();
--
--    if (spoof_release || spoof_version) {
--        ksu_spoof_version(spoof_release, spoof_version);
--    }
--
 -    ksu_syscall_hook_init();
 +#ifdef CONFIG_KSU_SUSFS
 +    susfs_init();
@@ -212,7 +197,7 @@ index a4364598..437682f4 100644
  
      // Wait for any in-flight RCU readers (e.g. handler traversing allow_list)
      synchronize_rcu();
-@@ -219,9 +130,11 @@ void __exit kernelsu_exit(void)
+@@ -219,9 +144,11 @@ void __exit kernelsu_exit(void)
      ksu_allowlist_exit();
  
      ksu_selinux_hide_exit();
@@ -261,18 +246,10 @@ index dda45d8b..fe3feeb1 100644
          pr_err("secctx_name is NULL\n");
          return 0;
 diff --git a/kernel/supercall/dispatch.c b/kernel/supercall/dispatch.c
-index d2e638be..a05d857d 100644
+index d2e638be..42d244a2 100644
 --- a/kernel/supercall/dispatch.c
 +++ b/kernel/supercall/dispatch.c
-@@ -23,7 +23,6 @@
- #include "sulog/event.h"
- #include "sulog/fd.h"
- #include "supercall/supercall.h"
--#include "feature/uts_spoof.h"
- 
- #ifdef CONFIG_KPM
- #include "kpm/kpm.h"
-@@ -476,7 +475,7 @@ static int do_manage_mark(void __user *arg)
+@@ -476,7 +476,7 @@ static int do_manage_mark(void __user *arg)
  int ksu_handle_sys_reboot(int magic1, int magic2, unsigned int cmd, void __user **arg)
  {
      if (magic1 != KSU_INSTALL_MAGIC1) {
@@ -281,38 +258,3 @@ index d2e638be..a05d857d 100644
      }
  
      // If magic2 is susfs and current process is root
-@@ -745,21 +744,6 @@ static int do_disable_escape_to_root(void __user *arg)
-     return 0;
- }
- 
--static int do_set_spoof_version(void __user *arg)
--{
--    struct ksu_set_spoof_version_cmd cmd;
--
--    if (copy_from_user(&cmd, arg, sizeof(cmd))) {
--        return -EFAULT;
--    }
--
--    cmd.release[sizeof(cmd.release) - 1] = '\0';
--    cmd.version[sizeof(cmd.version) - 1] = '\0';
--
--    return ksu_set_spoof_version(cmd.release[0] != '\0' ? cmd.release : NULL,
--                                 cmd.version[0] != '\0' ? cmd.version : NULL);
--}
--
- static int list_try_umount(void __user *arg)
- {
-     struct ksu_list_try_umount_cmd cmd;
-@@ -1051,12 +1035,6 @@ static const struct ksu_ioctl_cmd_map ksu_ioctl_handlers[] = {
-         .handler = do_disable_escape_to_root, 
-         .perm_check = only_root 
-     },
--    {
--        .cmd = KSU_IOCTL_SET_SPOOF_VERSION,
--        .name = "SET_SPOOF_VERSION",
--        .handler = do_set_spoof_version,
--        .perm_check = only_root
--    },
-     { 
-         .cmd = KSU_IOCTL_GET_FULL_VERSION,
-         .name = "GET_FULL_VERSION",

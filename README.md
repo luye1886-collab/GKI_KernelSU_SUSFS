@@ -73,13 +73,17 @@ Mayfly 使用独立的 `.github/workflows/mayfly-gki-build.yml` 和 `build_mayfl
 
 git-repo 同样从锁定 commit 准备，并在 repo init 前执行版本自检；输出必须包含 repo launcher `2.15`，否则立即停止。
 
-SukiSU v4.1.3 与 SUSFS v2.2.0 通过本地 `sukisu-v4.1.3-susfs-v2.2.0-compat.patch` 适配。该补丁保留 SukiSU 的命令行提权入口，但关闭依赖已被 SUSFS 替换的符号解析器的 UTS 版本伪装，避免链接出错。
+SukiSU v4.1.3 与 SUSFS v2.2.0 通过本地 `sukisu-v4.1.3-susfs-v2.2.0-compat.patch` 适配。该补丁保留 SukiSU 的命令行提权入口、符号解析器和仅限 root 调用的 UTS 版本伪装接口；构建不写入默认伪装值。
 
-补丁应用采用最小排除策略：LZ4KD 补丁中的 `kernel/module.c` 会放宽模块版本校验并改写模块黑名单，因此不合入；SUSFS common 补丁中的 `fs/proc/task_mmu.c` 仅服务于本构建已关闭的 SUS_MAP、KSTAT 和 OPEN_REDIRECT 隐藏能力，因此不合入。两项排除都会写入 `BUILD_INFO.json`，供产物审计。
+SUSFS 的 SUS_PATH、SUS_MOUNT、SUS_KSTAT、OPEN_REDIRECT、SUS_MAP 和符号隐藏能力会编译启用。两个锁定的 Android 12 5.10 基线在 `fs/proc/task_mmu.c` 中都与 SUSFS v2.2.0 上游 hunk 存在上下文差异，因此先排除该 hunk，再严格应用已在两条基线上验证的 `mayfly-android12-5.10-susfs-task-mmu.patch`。SUSFS 的全局 uname、bootconfig/cmdline 伪装和内核日志仍关闭，且不提供针对第三方 App 的规则。
+
+锁定的 `SukiSU_patch/69_hide_stuff.patch` 会先按 Git blob 的规范 LF 字节大小与 SHA256 审计，再由 `mayfly-android12-5.10-69-hide-stuff.patch` 在上述 task_mmu 基线上应用相同语义。它会改变特定映射在 `/proc` 中的呈现，属于兼容/隐藏能力而不是安全修复，可能降低诊断可见性；所有 profile 均会编译该能力，但本仓库不提供面向第三方 App 的额外规则或认证伪造配置。
+
+补丁应用仍采用最小排除策略：LZ4KD 补丁中的 `kernel/module.c` 会放宽模块版本校验并改写模块黑名单，因此不合入。该排除会写入 `BUILD_INFO.json`，供产物审计。
 
 分层 profile：
 
-- `root`：仅 KSU 与 SUSFS core。
+- `root`：KSU、SUSFS core 与上述隐藏能力。
 - `root-kpm`：`root` 加 KPM。
 - `balanced`：`root-kpm` 加 LZ4KD/ZRAM 与默认 BBR。
 - `balanced-bbg`：`balanced` 加 Baseband Guard，启动与 recovery 拦截保持关闭。
@@ -97,7 +101,7 @@ python .github/workflows/scripts/build_mayfly.py \
   --dry-run
 ```
 
-该专用路径只发布 raw `Image` 及验证元数据，不生成 `boot.img`、不签名 AVB、不制作 AnyKernel 包，也不执行刷写。`SukiSU_patch/69_hide_stuff.patch` 因包含第三方检测绕过行为而明确排除，并记录在 `BUILD_INFO.json`。
+该专用路径只发布 raw `Image` 及验证元数据，不生成 `boot.img`、不签名 AVB、不制作 AnyKernel 包，也不执行刷写。原始 `69_hide_stuff.patch`、设备专用重基补丁和各自 SHA256 会记录在 `BUILD_INFO.json`，供产物审计。
 
 ---
 
@@ -238,7 +242,9 @@ uname -r | sed 's/^[^-]*//'
 │   ├── dependencies.lock.json # 依赖仓库锁定版本
 │   └── matrix.json            # 构建矩阵配置
 ├── patches/
-│   └── sukisu-v4.1.3-susfs-v2.2.0-compat.patch # Mayfly SukiSU/SUSFS 兼容补丁
+│   ├── mayfly-android12-5.10-69-hide-stuff.patch  # 69_hide_stuff 的 Mayfly 重基补丁
+│   ├── mayfly-android12-5.10-susfs-task-mmu.patch # SUSFS task_mmu 的 Mayfly 适配
+│   └── sukisu-v4.1.3-susfs-v2.2.0-compat.patch  # Mayfly SukiSU/SUSFS 兼容补丁
 ├── scripts/
 │   ├── build.py             # 主构建脚本（CLI 入口）
 │   ├── build_mayfly.py      # Mayfly 专用 CLI 入口
