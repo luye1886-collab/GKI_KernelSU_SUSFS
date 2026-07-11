@@ -51,12 +51,12 @@ on:
           - Dev(开发)
         default: Stable(标准)
       kernelsu_commit:
-        description: '指定 KernelSU commit hash (可选)'
+        description: '留空使用 dependencies.lock.json 锁定值；覆盖仅接受完整 40 位小写 commit'
         required: false
         type: string
         default: ''
       susfs_commit:
-        description: '指定 SUSFS commit hash'
+        description: '留空使用 dependencies.lock.json 锁定值；覆盖仅接受完整 40 位小写 commit'
         required: false
         type: string
         default: ''

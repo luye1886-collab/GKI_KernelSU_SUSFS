@@ -20,13 +20,13 @@
 2. 选择 **Kernel Build**
 3. 点击 **Run workflow**
 4. 选择 Android 版本、Kernel 版本和构建选项
-5. 可选：指定 SukiSU-Ultra 或 SUSFS 的 commit hash
+5. 可选：指定 SukiSU-Ultra 或 SUSFS 的完整 40 位小写十六进制 commit
 
 #### 方式二：构建所有版本
 1. 选择 **Build Kernels**
 2. 点击 **Run workflow**
 3. 设置全局选项（KSU 版本、ZRAM、KPM 等）
-4. 可选：指定 commit 版本
+4. 可选：指定完整 40 位小写十六进制 commit
 
 ### 命令行本地构建
 
@@ -46,8 +46,8 @@ python build.py --matrix android14-6.1
 # 构建所有版本
 python build.py --all
 
-# 指定 commit 版本
-python build.py --all --ksu-commit abc1234 --susfs-commit HEAD~1
+# 指定完整 commit 版本
+python build.py --all --ksu-commit 278d822a4ebd214bcfd774b7910cb11cdc560bb9 --susfs-commit 81f01bc58d055687a6276114c1371b8ac09e8b26
 
 # 列出所有支持的配置
 python build.py --list-configs
@@ -55,6 +55,49 @@ python build.py --list-configs
 # 列出预定义构建矩阵
 python build.py --list-matrix
 ```
+
+未显式指定 `--ksu-commit` 或 `--susfs-commit` 时，默认使用 `.github/workflows/config/dependencies.lock.json` 中的锁定值。显式覆盖仅接受完整 40 位小写十六进制 commit，不接受短 SHA、分支名或相对引用。
+
+## Mayfly 安全 GKI 构建
+
+Mayfly 使用独立的 `.github/workflows/mayfly-gki-build.yml` 和 `build_mayfly.py`。该路径必须显式选择固定源与分层 profile，不调用通用 `build.py`，也不执行第三方 `setup.sh`。
+
+固定源：
+
+- `stock-5.10.226`：Mayfly 原厂基线，预期 release 前缀为 `5.10.226-android12-9`。
+- `security-5.10.236-r1`：冻结在 `android12-5.10-2025-05_r1` tag 和 `b97c62c4e7d1e80fb6a2cb0cb381f03bbcd26a4e` 的安全基线，预期 release 前缀为 `5.10.236-android12-9`。
+
+锁文件中的 `fbb4c9b0aa2909575b240a5404b6a3eaa1d2755d` 是 2026-05 branch head，仅保留用于审计并标记为实验项，Mayfly 专用 builder 不会选择或克隆它。
+
+完整构建树在 sync 前由固定 superproject gitlinks 锁定：builder 先核验对应 superproject 快照，再把 manifest 中每个 project 改写为精确 commit，并使用 `--no-manifest-update` 同步。`resolved-manifest.xml` 是同步后的逐项复核产物，不是事后才决定源码版本的依据。
+
+git-repo 同样从锁定 commit 准备，并在 repo init 前执行版本自检；输出必须包含 repo launcher `2.15`，否则立即停止。
+
+SukiSU v4.1.3 与 SUSFS v2.2.0 通过本地 `sukisu-v4.1.3-susfs-v2.2.0-compat.patch` 适配。该补丁保留 SukiSU 的命令行提权入口，但关闭依赖已被 SUSFS 替换的符号解析器的 UTS 版本伪装，避免链接出错。
+
+补丁应用采用最小排除策略：LZ4KD 补丁中的 `kernel/module.c` 会放宽模块版本校验并改写模块黑名单，因此不合入；SUSFS common 补丁中的 `fs/proc/task_mmu.c` 仅服务于本构建已关闭的 SUS_MAP、KSTAT 和 OPEN_REDIRECT 隐藏能力，因此不合入。两项排除都会写入 `BUILD_INFO.json`，供产物审计。
+
+分层 profile：
+
+- `root`：仅 KSU 与 SUSFS core。
+- `root-kpm`：`root` 加 KPM。
+- `balanced`：`root-kpm` 加 LZ4KD/ZRAM 与默认 BBR。
+- `balanced-bbg`：`balanced` 加 Baseband Guard，启动与 recovery 拦截保持关闭。
+
+Mayfly 原厂系统通过 `vendor_dlkm` 模块提供约 6 GiB ZRAM。`balanced` 内置 LZ4KD/ZRAM 后可能与原厂 `zram.ko`、`zsmalloc.ko` 的加载顺序或配置冲突，因此不能作为首个测试层；临时启动后必须检查模块加载、Swap 容量、LMKD、休眠唤醒、功耗和内存压力，再决定是否继续使用。
+
+先执行只读预演；`--dry-run` 只核验锁定值并输出 JSON，不创建 workspace 或产物目录：
+
+```bash
+python .github/workflows/scripts/build_mayfly.py \
+  --source stock-5.10.226 \
+  --profile root \
+  --workspace /tmp/mayfly-gki \
+  --artifacts artifacts \
+  --dry-run
+```
+
+该专用路径只发布 raw `Image` 及验证元数据，不生成 `boot.img`、不签名 AVB、不制作 AnyKernel 包，也不执行刷写。`SukiSU_patch/69_hide_stuff.patch` 因包含第三方检测绕过行为而明确排除，并记录在 `BUILD_INFO.json`。
 
 ---
 
@@ -83,8 +126,8 @@ python build.py --list-matrix
 | `--os-patch` | OS Patch Level | 2025-02 |
 | `--revision` | Android 12 Revision | - |
 | `--ksu-version` | SukiSU-Ultra 版本 (Stable/Dev) | Stable(标准) |
-| `--ksu-commit` | 指定 SukiSU-Ultra commit hash | latest |
-| `--susfs-commit` | 指定 SUSFS commit (hash 或 HEAD~N) | latest |
+| `--ksu-commit` | 指定完整 40 位小写十六进制 SukiSU-Ultra commit | dependencies.lock.json |
+| `--susfs-commit` | 指定完整 40 位小写十六进制 SUSFS commit | dependencies.lock.json |
 | `--zram` | 启用 ZRAM (LZ4KD) | False |
 | `--no-kpm` | 禁用 KPM | False |
 | `--bbg` | 启用 Baseband-guard | False |
@@ -192,14 +235,20 @@ uname -r | sed 's/^[^-]*//'
 ```
 .github/workflows/
 ├── config/
-│   └── matrix.json          # 构建矩阵配置
+│   ├── dependencies.lock.json # 依赖仓库锁定版本
+│   └── matrix.json            # 构建矩阵配置
+├── patches/
+│   └── sukisu-v4.1.3-susfs-v2.2.0-compat.patch # Mayfly SukiSU/SUSFS 兼容补丁
 ├── scripts/
 │   ├── build.py             # 主构建脚本（CLI 入口）
+│   ├── build_mayfly.py      # Mayfly 专用 CLI 入口
 │   ├── kernel_builder.py    # 内核构建核心类
+│   ├── mayfly_builder.py    # Mayfly 失败即停构建核心
 │   ├── config.py            # 配置定义和验证
 │   ├── matrix_generator.py  # GitHub Actions 矩阵生成
 │   ├── release_generator.py # Release 说明生成
 │   └── cache_manager.py     # 构建缓存管理
+├── mayfly-gki-build.yml     # Mayfly raw Image 专用工作流
 ├── kernel-build.yml         # 单版本构建工作流
 └── build-kernels.yml        # 全量构建工作流
 ```

@@ -1,0 +1,109 @@
+name: Mayfly GKI Build
+
+on:
+  workflow_dispatch:
+    inputs:
+      source:
+        description: Locked mayfly kernel source
+        required: true
+        type: choice
+        options:
+          - stock-5.10.226
+          - security-5.10.236-r1
+        default: stock-5.10.226
+      profile:
+        description: Layered mayfly feature profile
+        required: true
+        type: choice
+        options:
+          - root
+          - root-kpm
+          - balanced
+          - balanced-bbg
+        default: root
+
+permissions:
+  contents: read
+
+concurrency:
+  group: mayfly-gki-${{ github.repository }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    steps:
+      - name: Free runner disk space
+        uses: AdityaGarg8/remove-unwanted-software@90e01b21170618765a73370fcc3abbd1684a7793
+        with:
+          remove-dotnet: "true"
+          remove-android: "true"
+          remove-haskell: "true"
+          remove-codeql: "true"
+          remove-docker-images: "true"
+          remove-large-packages: "true"
+          remove-swapfile: "false"
+          verbose: "true"
+
+      - name: Checkout repository
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+
+      - name: Set up Python
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065
+        with:
+          python-version: "3.12"
+
+      - name: Install build prerequisites
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          packages=(
+            bc
+            bison
+            build-essential
+            ca-certificates
+            cpio
+            dwarves
+            flex
+            git
+            libelf-dev
+            libncurses-dev
+            libssl-dev
+            lz4
+            patch
+            python3
+            rsync
+            unzip
+            xz-utils
+            zip
+          )
+          sudo apt-get install -y --no-install-recommends "${packages[@]}"
+
+      - name: Run unit and Linux integration preflight
+        shell: bash
+        run: |
+          set -euo pipefail
+          PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s tests -v
+
+      - name: Build raw mayfly Image
+        shell: bash
+        run: |
+          set -euo pipefail
+          args=(
+            --source "${{ inputs.source }}"
+            --profile "${{ inputs.profile }}"
+            --workspace "${RUNNER_TEMP}/mayfly-gki"
+            --artifacts "${GITHUB_WORKSPACE}/artifacts"
+            --jobs 4
+          )
+          python3 .github/workflows/scripts/build_mayfly.py "${args[@]}"
+
+      - name: Upload raw Image artifacts
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: mayfly-${{ inputs.source }}-${{ inputs.profile }}
+          path: artifacts/
+          if-no-files-found: error
+          retention-days: 7

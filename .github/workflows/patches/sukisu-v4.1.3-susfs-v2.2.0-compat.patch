@@ -1,0 +1,318 @@
+diff --git a/kernel/Kbuild b/kernel/Kbuild
+index 20fa3eda..2a1aa866 100644
+--- a/kernel/Kbuild
++++ b/kernel/Kbuild
+@@ -39,8 +39,6 @@ kernelsu-objs += feature/adb_root.o
+ 
+ kernelsu-objs += feature/selinux_hide.o
+ 
+-kernelsu-objs += feature/uts_spoof.o
+-
+ ifdef KBUILD_EXTMOD
+ ifeq ($(CONFIG_KSU_DISABLE_MANAGER),y)
+ ccflags-y += -DCONFIG_KSU_DISABLE_MANAGER=1
+diff --git a/kernel/Kconfig b/kernel/Kconfig
+index eb5b19e2..b82113f3 100644
+--- a/kernel/Kconfig
++++ b/kernel/Kconfig
+@@ -69,7 +69,7 @@ config KSU_SUSFS_SUS_PATH
+ 	  - Allow hiding the user-defined path and all its sub-paths from various system calls.
+ 	  - Use "add_sus_path_loop" instead of "add_sus_path" if the user-defined path is frequently modified.
+ 	  - Use with cautious as it may cause performance loss and will be vulnerable to side channel attacks,
+-	  	just disable this feature if it doesn't work for you or you don't need it at all.
++	    just disable this feature if it doesn't work for you or you don't need it at all.
+ 	  - Effective only on zygote spawned user app process with uid >= 10000.
+ 
+ config KSU_SUSFS_SUS_MOUNT
+diff --git a/kernel/core/init.c b/kernel/core/init.c
+index a4364598..437682f4 100644
+--- a/kernel/core/init.c
++++ b/kernel/core/init.c
+@@ -6,6 +6,7 @@
+ #include <linux/sched.h>
+ #include <linux/workqueue.h>
+ #include <linux/moduleparam.h>
++#include <linux/susfs.h>
+ 
+ #include "policy/allowlist.h"
+ #include "policy/app_profile.h"
+@@ -13,8 +14,6 @@
+ #include "klog.h" // IWYU pragma: keep
+ #include "manager/manager_observer.h"
+ #include "manager/throne_tracker.h"
+-#include "hook/syscall_hook_manager.h"
+-#include "hook/lsm_hook.h"
+ #include "runtime/ksud.h"
+ #include "runtime/ksud_boot.h"
+ #include "feature/sulog.h"
+@@ -22,19 +21,10 @@
+ #include "ksu.h"
+ #include "infra/file_wrapper.h"
+ #include "selinux/selinux.h"
+-#include "hook/syscall_hook.h"
+ #include "feature/adb_root.h"
+ #include "feature/selinux_hide.h"
+-#include "feature/uts_spoof.h"
+-#include "infra/symbol_resolver.h"
+-
+-#if defined(__x86_64__)
+-#include <asm/cpufeature.h>
+-#include <linux/version.h>
+-#ifndef X86_FEATURE_INDIRECT_SAFE
+-#error "FATAL: Your kernel is missing the indirect syscall bypass patches!"
+-#endif
+-#endif
++#include "hook/setuid_hook.h"
++#include "feature/sucompat.h"
+ 
+ // workaround for A12-5.10 kernel
+ // Some third-party kernel (e.g. linegaeOS) uses wrong toolchain, which supports
+@@ -72,7 +62,6 @@ __attribute__((naked)) int __init kernelsu_init_early(void)
+ #endif
+ 
+ struct cred *ksu_cred;
+-bool ksu_late_loaded;
+ 
+ #ifdef CONFIG_KSU_DEBUG
+ bool allow_shell = true;
+@@ -84,36 +73,8 @@ module_param(allow_shell, bool, 0);
+ bool ksu_no_custom_rc = false;
+ module_param_named(norc, ksu_no_custom_rc, bool, 0);
+ 
+-static char *spoof_release = NULL;
+-module_param(spoof_release, charp, 0);
+-
+-static char *spoof_version = NULL;
+-module_param(spoof_version, charp, 0);
+-
+ int __init kernelsu_init(void)
+ {
+-#if defined(__x86_64__)
+-    // If the kernel has the hardening patch, X86_FEATURE_INDIRECT_SAFE must be set
+-    if (!boot_cpu_has(X86_FEATURE_INDIRECT_SAFE)) {
+-        pr_alert("*************************************************************");
+-        pr_alert("**     NOTICE NOTICE NOTICE NOTICE NOTICE NOTICE NOTICE    **");
+-        pr_alert("**                                                         **");
+-        pr_alert("**        X86_FEATURE_INDIRECT_SAFE is not enabled!        **");
+-        pr_alert("**      KernelSU will abort initialization to prevent      **");
+-        pr_alert("**                     kernel panic.                       **");
+-        pr_alert("**                                                         **");
+-        pr_alert("**     NOTICE NOTICE NOTICE NOTICE NOTICE NOTICE NOTICE    **");
+-        pr_alert("*************************************************************");
+-        return -ENOSYS;
+-    }
+-#endif
+-
+-#ifdef MODULE
+-    ksu_late_loaded = (current->pid != 1);
+-#else
+-    ksu_late_loaded = false;
+-#endif
+-
+ #ifdef CONFIG_KSU_DEBUG
+     pr_alert("*************************************************************");
+     pr_alert("**     NOTICE NOTICE NOTICE NOTICE NOTICE NOTICE NOTICE    **");
+@@ -123,6 +84,7 @@ int __init kernelsu_init(void)
+     pr_alert("**     NOTICE NOTICE NOTICE NOTICE NOTICE NOTICE NOTICE    **");
+     pr_alert("*************************************************************");
+ #endif
++
+     if (allow_shell) {
+         pr_alert("shell is allowed at init!");
+     }
+@@ -133,80 +95,29 @@ int __init kernelsu_init(void)
+         return -ENOSYS;
+     }
+ 
+-    ksu_init_symbol_resolver();
+-
+-    if (spoof_release || spoof_version) {
+-        ksu_spoof_version(spoof_release, spoof_version);
+-    }
+-
+-    ksu_syscall_hook_init();
++#ifdef CONFIG_KSU_SUSFS
++    susfs_init();
++#endif
+ 
+     ksu_feature_init();
++    ksu_supercalls_init();
++    ksu_sucompat_init();
++    ksu_setuid_hook_init();
+     ksu_sulog_init();
+     ksu_adb_root_init();
+-    ksu_lsm_hook_init();
+     ksu_selinux_hide_init();
++    ksu_allowlist_init();
++    ksu_throne_tracker_init();
++    ksu_ksud_init();
++    ksu_file_wrapper_init();
+ 
+-    ksu_supercalls_init();
+-
+-    if (ksu_late_loaded) {
+-        pr_info("late load mode, skipping kprobe hooks\n");
+-
+-        apply_kernelsu_rules();
+-        cache_sid();
+-        setup_ksu_cred();
+-
+-        // Grant current process (ksud late-load) root
+-        // with KSU SELinux domain before enforcing SELinux, so it
+-        // can continue to access /data/app etc. after enforcement.
+-        escape_to_root_for_init();
+-
+-        ksu_allowlist_init();
+-        ksu_load_allow_list();
+-
+-        ksu_syscall_hook_manager_init();
+-
+-        ksu_throne_tracker_init();
+-        ksu_observer_init();
+-        ksu_file_wrapper_init();
+-
+-        ksu_boot_completed = true;
+-        track_throne(false);
+-
+-        if (!getenforce()) {
+-            pr_info("Permissive SELinux, enforcing\n");
+-            setenforce(true);
+-        }
+-
+-    } else {
+-        ksu_syscall_hook_manager_init();
+-
+-        ksu_allowlist_init();
+-
+-        ksu_throne_tracker_init();
+-
+-        ksu_ksud_init();
+-
+-        ksu_file_wrapper_init();
+-    }
+-
+-#ifdef MODULE
+-#ifndef CONFIG_KSU_DEBUG
+-    kobject_del(&THIS_MODULE->mkobj.kobj);
+-#endif
+-#endif
+     return 0;
+ }
+ 
+ void __exit kernelsu_exit(void)
+ {
+-    // Phase 1: Stop all hooks first to prevent new callbacks
+-    ksu_syscall_hook_manager_exit();
+-
+     ksu_supercalls_exit();
+-
+-    if (!ksu_late_loaded)
+-        ksu_ksud_exit();
++    ksu_ksud_exit();
+ 
+     // Wait for any in-flight RCU readers (e.g. handler traversing allow_list)
+     synchronize_rcu();
+@@ -219,9 +130,11 @@ void __exit kernelsu_exit(void)
+     ksu_allowlist_exit();
+ 
+     ksu_selinux_hide_exit();
+-    ksu_lsm_hook_exit();
++
+     ksu_adb_root_exit();
++
+     ksu_sulog_exit();
++
+     ksu_feature_exit();
+ 
+     put_cred(ksu_cred);
+diff --git a/kernel/policy/app_profile.h b/kernel/policy/app_profile.h
+index f6368428..93c930f7 100644
+--- a/kernel/policy/app_profile.h
++++ b/kernel/policy/app_profile.h
+@@ -8,7 +8,7 @@
+ // Escalate current process to root with the appropriate profile
+ int escape_with_root_profile(void);
+ 
+-void escape_to_root_for_init(void);
++int escape_to_root_for_init(void);
+ 
+ void escape_to_root_for_cmd_su(uid_t target_uid, pid_t target_pid);
+ 
+diff --git a/kernel/selinux/selinux.c b/kernel/selinux/selinux.c
+index dda45d8b..fe3feeb1 100644
+--- a/kernel/selinux/selinux.c
++++ b/kernel/selinux/selinux.c
+@@ -233,7 +233,7 @@ u32 susfs_priv_app_sid __read_mostly = 0;
+ static inline void susfs_set_sid(const char *secctx_name, u32 *out_sid)
+ {
+     int err;
+-    
++
+     if (!secctx_name || !out_sid) {
+         pr_err("secctx_name || out_sid is NULL\n");
+         return;
+@@ -265,7 +265,7 @@ u32 susfs_get_sid_from_name(const char *secctx_name)
+ {
+     u32 out_sid = 0;
+     int err;
+-    
++
+     if (!secctx_name) {
+         pr_err("secctx_name is NULL\n");
+         return 0;
+diff --git a/kernel/supercall/dispatch.c b/kernel/supercall/dispatch.c
+index d2e638be..a05d857d 100644
+--- a/kernel/supercall/dispatch.c
++++ b/kernel/supercall/dispatch.c
+@@ -23,7 +23,6 @@
+ #include "sulog/event.h"
+ #include "sulog/fd.h"
+ #include "supercall/supercall.h"
+-#include "feature/uts_spoof.h"
+ 
+ #ifdef CONFIG_KPM
+ #include "kpm/kpm.h"
+@@ -476,7 +475,7 @@ static int do_manage_mark(void __user *arg)
+ int ksu_handle_sys_reboot(int magic1, int magic2, unsigned int cmd, void __user **arg)
+ {
+     if (magic1 != KSU_INSTALL_MAGIC1) {
+-        return -EINVAL; 
++        return -EINVAL;
+     }
+ 
+     // If magic2 is susfs and current process is root
+@@ -745,21 +744,6 @@ static int do_disable_escape_to_root(void __user *arg)
+     return 0;
+ }
+ 
+-static int do_set_spoof_version(void __user *arg)
+-{
+-    struct ksu_set_spoof_version_cmd cmd;
+-
+-    if (copy_from_user(&cmd, arg, sizeof(cmd))) {
+-        return -EFAULT;
+-    }
+-
+-    cmd.release[sizeof(cmd.release) - 1] = '\0';
+-    cmd.version[sizeof(cmd.version) - 1] = '\0';
+-
+-    return ksu_set_spoof_version(cmd.release[0] != '\0' ? cmd.release : NULL,
+-                                 cmd.version[0] != '\0' ? cmd.version : NULL);
+-}
+-
+ static int list_try_umount(void __user *arg)
+ {
+     struct ksu_list_try_umount_cmd cmd;
+@@ -1051,12 +1035,6 @@ static const struct ksu_ioctl_cmd_map ksu_ioctl_handlers[] = {
+         .handler = do_disable_escape_to_root, 
+         .perm_check = only_root 
+     },
+-    {
+-        .cmd = KSU_IOCTL_SET_SPOOF_VERSION,
+-        .name = "SET_SPOOF_VERSION",
+-        .handler = do_set_spoof_version,
+-        .perm_check = only_root
+-    },
+     { 
+         .cmd = KSU_IOCTL_GET_FULL_VERSION,
+         .name = "GET_FULL_VERSION",
